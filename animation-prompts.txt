@@ -1,0 +1,8 @@
+Tool: built-in ImageGen. Edit target: cat-button.png.
+Output: cat-base.png
+Edit target: attached gold fantasy game button. Create static animation base layer. Preserve exact original canvas dimensions, original gold frame position and size, wood interior and cat head. Remove BOTH raised paws/arms and ALL glowing claw scratches, fill those areas with matching continuous wood. Keep cat head and ears unchanged. Transparent outside frame, no text. No new elements. Exact same framing and layout.
+
+Output: cat-paws.png
+Edit target: attached button. Extract ONLY the two black raised cat paws with arms and their thin cyan/gold edge highlights as an animation layer. Remove EVERYTHING else including frame, wood, head and red claw scratches to real transparency. Preserve exact original canvas dimensions and each paw's original position and size; don't center or crop the paws. Bottoms of arms terminate at original inside bottom edge. No text.
+
+Animated claw paths, colors and paw motion are rendered by RuneArt.cs.
