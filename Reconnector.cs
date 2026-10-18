@@ -7,8 +7,8 @@ using System.Security.Principal;
 using System.Windows.Forms;
 using System.Threading.Tasks;
 
-[assembly: System.Reflection.AssemblyVersion("4.1.0.0")]
-[assembly: System.Reflection.AssemblyFileVersion("4.1.0.0")]
+[assembly: System.Reflection.AssemblyVersion("4.2.0.0")]
+[assembly: System.Reflection.AssemblyFileVersion("4.2.0.0")]
 
 namespace HearthstoneReconnector
 {
@@ -53,6 +53,14 @@ namespace HearthstoneReconnector
         ToolStripMenuItem moveItem;
         Point dragStart;
         Point formStart;
+        readonly ConnectionObservation observation=new ConnectionObservation();
+        readonly ConnectionMemory memory=new ConnectionMemory();
+        Task<ConnectionSnapshot> sampleTask;
+        DateTime nextSample;
+        ToolStripMenuItem confirmItem;
+        ConnectionSnapshot pendingSnapshot;
+        GameConnection pendingTarget;
+        DateTime pendingUntil;
         bool busy;
         bool closeAfterRestore;
 
@@ -61,7 +69,7 @@ namespace HearthstoneReconnector
 
         public Overlay()
         {
-            Text = "Hearthstone Reconnector 4.1";
+            Text = "Hearthstone Reconnector 4.2";
             FormBorderStyle = FormBorderStyle.None;
             ShowInTaskbar = false;
             TopMost = true;
@@ -83,6 +91,17 @@ namespace HearthstoneReconnector
                 try { FirewallBackend.CleanStale(); status.Text = "Блокировка снята"; messageUntil = DateTime.UtcNow.AddSeconds(5); }
                 catch(Exception ex) { ConnectionManager.Log(ex.ToString()); MessageBox.Show("Не удалось снять блокировку: " + ex.Message); }
             });
+            menu.Items.Add("Выбрать соединение вручную…",null,delegate { ReconnectManual(); });
+            confirmItem=new ToolStripMenuItem("Матч восстановился — запомнить");confirmItem.Enabled=false;
+            confirmItem.Click+=delegate {
+                if(busy || pendingTarget==null || DateTime.UtcNow>pendingUntil)return;
+                try {
+                    using(var game=Process.GetProcessById(pendingSnapshot.Pid))if(game.StartTime.ToUniversalTime().Ticks!=pendingSnapshot.Started)throw new IOException("Сессия игры уже изменилась. Подтверждение отменено.");
+                    memory.Confirm(pendingSnapshot.Path,pendingTarget,"USER_CONFIRMED");pendingTarget=null;confirmItem.Enabled=false;tray.ShowBalloonTip(3000,"Reconnector","Подтверждённое соединение сохранено.",ToolTipIcon.Info); }
+                catch(Exception ex){ConnectionManager.Log(ex.ToString());MessageBox.Show(ex.Message);}
+            };
+            menu.Items.Add(confirmItem);
+            menu.Items.Add("Сбросить память соединений",null,delegate { if(!busy) { try { memory.Clear();pendingTarget=null;confirmItem.Enabled=false; } catch(Exception ex){MessageBox.Show(ex.Message);} } });
             menu.Items.Add("Открыть журнал", null, delegate { try { if(File.Exists(ConnectionManager.LogPath)) Process.Start("notepad.exe", "\"" + ConnectionManager.LogPath + "\""); } catch {} });
             menu.Items.Add("Выход", null, delegate { Close(); });
             Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
@@ -154,20 +173,42 @@ namespace HearthstoneReconnector
         void SavePosition() { try { ClampPosition(); Directory.CreateDirectory(Path.GetDirectoryName(config)); File.WriteAllText(config, Left + "," + Top); } catch {} }
         void RefreshState()
         {
-            bool running = false, foreground = false;
+            bool running = false, foreground = false; int gamePid=0;
             uint foregroundPid; GetWindowThreadProcessId(GetForegroundWindow(), out foregroundPid);
             foreach(var p in Process.GetProcessesByName("Hearthstone"))
-                using(p) { running = true; if((uint)p.Id == foregroundPid) foreground = true; }
+                using(p) { running = true; if(gamePid==0)gamePid=p.Id; if((uint)p.Id == foregroundPid) foreground = true; }
+            if(gamePid!=0 && !busy && DateTime.UtcNow>=nextSample && sampleTask==null) ObserveConnections(gamePid);
+            if(pendingTarget!=null && gamePid!=pendingSnapshot.Pid)pendingTarget=null;
+            if(confirmItem!=null)confirmItem.Enabled=!busy && pendingTarget!=null && DateTime.UtcNow<pendingUntil;
             if(running && !positioned) PlaceDefault();
             bool shouldShow = moveMode || foreground || dragging || DateTime.UtcNow < previewUntil;
             if(shouldShow && !Visible) Show(); else if(!shouldShow && Visible) Hide();
             reconnect.ActionEnabled = running && !busy && DateTime.UtcNow >= cooldown;
             if(!busy && DateTime.UtcNow >= messageUntil) status.Text = !running ? "Ожидание Hearthstone" : DateTime.UtcNow < cooldown ? "Ожидание переподключения…" : "Готово";
         }
-        async void Reconnect(object sender, EventArgs e)
+        static ConnectionSnapshot CaptureConnections(int pid) {
+            using(var process=Process.GetProcessById(pid)) {
+                if(!process.ProcessName.Equals("Hearthstone",StringComparison.OrdinalIgnoreCase))throw new InvalidOperationException("Процесс не является Hearthstone.");
+                string path=process.MainModule.FileName;long birth=process.StartTime.ToUniversalTime().Ticks;
+                var rows=GameConnections.Read(pid);
+                if(process.HasExited || process.StartTime.ToUniversalTime().Ticks!=birth)throw new IOException("Процесс игры изменился.");
+                return new ConnectionSnapshot{Pid=pid,Started=birth,Path=path,Rows=rows,LoggedEndpoint=GameConnections.ReadLoggedEndpoint(path,new DateTime(birth,DateTimeKind.Utc))};
+            }
+        }
+        async void ObserveConnections(int pid) {
+            nextSample=DateTime.UtcNow.AddSeconds(1);
+            var task=Task.Run(delegate{return CaptureConnections(pid);});sampleTask=task;
+            try { var snapshot=await task;if(!IsDisposed)observation.Update(snapshot.Pid,snapshot.Started,snapshot.Rows,DateTime.UtcNow); }
+            catch(Exception ex) { nextSample=DateTime.UtcNow.AddSeconds(15);ConnectionManager.Log("OBSERVE "+ex.Message); }
+            finally { if(sampleTask==task)sampleTask=null; }
+        }
+        async void Reconnect(object sender, EventArgs e) { await RunReconnect(false); }
+        async void ReconnectManual() { await RunReconnect(true); }
+        async Task RunReconnect(bool manual)
         {
             if(moveMode || busy || DateTime.UtcNow < cooldown) return;
             busy = true;
+            pendingTarget=null;confirmItem.Enabled=false;
             reconnect.Busy = true;
             reconnect.ActionEnabled = false;
             string eventName = "Local\\HSRC2Cancel_" + Guid.NewGuid().ToString("N");
@@ -178,7 +219,28 @@ namespace HearthstoneReconnector
                 foreach(var p in Process.GetProcessesByName("Hearthstone")) using(p) { pid = p.Id; break; }
                 if(pid == 0) throw new InvalidOperationException("Hearthstone не запущен.");
                 status.Text = "Проверка переподключения…";
-                string result = await Task.Run(delegate { return FirewallWorker.Launch(pid, eventName); });
+                if(sampleTask!=null) { try { await sampleTask; } catch {} }
+                var snapshot=await Task.Run(delegate { return CaptureConnections(pid); });
+                observation.Update(snapshot.Pid,snapshot.Started,snapshot.Rows,DateTime.UtcNow);
+                foreach(var row in snapshot.Rows)ConnectionManager.Log("CANDIDATE "+row+" new="+observation.IsNew(row,DateTime.UtcNow)+" known="+memory.Known(snapshot.Path,row));
+                string reason="MANUAL";
+                var target=manual?null:memory.Select(snapshot,observation,out reason);
+                if(target==null) {
+                    if(snapshot.Rows.Count==0)throw new IOException("У Hearthstone нет установленных соединений. Войдите в матч.");
+                    reconnect.Busy=false;
+                    using(var picker=new ConnectionPicker(snapshot,observation,memory)) {
+                        if(picker.ShowDialog()!=DialogResult.OK)return;
+                        target=picker.Selected;reason="MANUAL";
+                    }
+                    reconnect.Busy=true;
+                }
+                if(cancel.WaitOne(0))return;
+                ConnectionManager.Log("SELECT reason="+reason+" target="+target);
+                string result = await Task.Run(delegate { return FirewallWorker.Launch(pid,eventName,target,snapshot.Started); });
+                if(result.StartsWith("SOCKET_REPLACED|",StringComparison.Ordinal)) {
+                    pendingSnapshot=snapshot;pendingTarget=target;pendingUntil=DateTime.UtcNow.AddSeconds(90);
+                    tray.ShowBalloonTip(10000,"Reconnector","Если вы вернулись в матч, выберите в трее «Матч восстановился — запомнить».",ToolTipIcon.Info);
+                }
                 status.Text = result;
                 if(result.StartsWith("MATCH_RESTORED|",StringComparison.Ordinal)) reconnect.Flash(false);
                 else reconnect.FlashWarning();

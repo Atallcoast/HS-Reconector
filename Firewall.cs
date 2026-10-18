@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -140,7 +140,11 @@ namespace HearthstoneReconnector
         { return new ProcessStartInfo(Application.ExecutablePath, arguments) { UseShellExecute = false, CreateNoWindow = true, WindowStyle = ProcessWindowStyle.Hidden }; }
         internal static string Launch(int pid, string cancelEvent)
         {
-            var info = StartInfo("--direct " + pid + " " + cancelEvent);
+            return Launch(pid,cancelEvent,null,0);
+        }
+        internal static string Launch(int pid, string cancelEvent, GameConnection selected, long started)
+        {
+            var info = StartInfo(selected==null?"--direct "+pid+" "+cancelEvent:"--selected "+pid+" "+cancelEvent+" "+started+" "+ConnectionObservation.Key(selected));
             info.RedirectStandardOutput = true;
             info.StandardOutputEncoding = new UTF8Encoding(false);
             using(var worker = Process.Start(info))
@@ -156,6 +160,7 @@ namespace HearthstoneReconnector
             try {
                 switch(args[0]) {
                     case "--direct": if(args.Length!=3)throw new ArgumentException(); using(var cancel=EventWaitHandle.OpenExisting(args[2])) { WriteOutput(DirectReconnect.Execute(int.Parse(args[1]),cancel));return 0; }
+                    case "--selected": if(args.Length!=5)throw new ArgumentException(); using(var cancel=EventWaitHandle.OpenExisting(args[2])) { WriteOutput(DirectReconnect.Execute(int.Parse(args[1]),cancel,args[4],long.Parse(args[3])));return 0; }
                     case "--utf8-test": WriteOutput("Переподключение подтверждено.");return 0;
                     
                     

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
@@ -22,16 +22,19 @@ namespace HearthstoneReconnector
             return new TcpRow { State = 12, LocalAddress = BitConverter.ToUInt32(local.GetAddressBytes(),0), RemoteAddress = BitConverter.ToUInt32(remote.GetAddressBytes(),0), LocalPort = SwapPort(target.LocalPort), RemotePort = SwapPort(target.RemotePort) };
         }
         static uint SwapPort(int port) { if(port<1 || port>65535) throw new ArgumentOutOfRangeException("port"); return (uint)(((port&255)<<8)|((port>>8)&255)); }
-        internal static string Execute(int pid, EventWaitHandle cancel)
+        internal static string Execute(int pid, EventWaitHandle cancel) { return Execute(pid,cancel,null,0); }
+        internal static string Execute(int pid, EventWaitHandle cancel, string selectedKey, long expectedStart)
         {
             string path; DateTime start;
             using(var process = Process.GetProcessById(pid)) {
                 if(!process.ProcessName.Equals("Hearthstone",StringComparison.OrdinalIgnoreCase)) throw new InvalidOperationException("Процесс не является Hearthstone.");
                 path=process.MainModule.FileName; start=process.StartTime;
+                if(expectedStart!=0 && start.ToUniversalTime().Ticks!=expectedStart)throw new IOException("Процесс игры изменился после выбора.");
             }
             var before=GameConnections.Read(pid);
             foreach(var connection in before) ConnectionManager.Log("CANDIDATE " + connection + " localIP="+connection.LocalAddress);
-            var target=GameConnections.Select(before,GameConnections.ReadLoggedEndpoint(path));
+            var target=selectedKey==null?GameConnections.Select(before,GameConnections.ReadLoggedEndpoint(path)):ConnectionObservation.Parse(selectedKey);
+            if(target!=null && !ContainsSocket(before,target))throw new IOException("Выбранное соединение уже исчезло. Обновите список.");
             if(target==null) throw new InvalidOperationException("Не удалось однозначно определить соединение матча. См. CANDIDATE в журнале.");
             var native=MakeRow(target);
             var log=GameLogCursor.Capture(path);
@@ -55,6 +58,7 @@ namespace HearthstoneReconnector
                 if(!present && !oldGone) { oldGone=true; ConnectionManager.Log("OLD_SOCKET_GONE elapsedMs="+clock.ElapsedMilliseconds); }
                 if(oldGone && newFound && log!=null && log.MatchStarted()) {
                     ConnectionManager.Log("MATCH_RESTORED elapsedMs="+clock.ElapsedMilliseconds);
+                    try { new ConnectionMemory().Confirm(path,target,"MATCH_RESTORED"); } catch(Exception ex) { ConnectionManager.Log("MEMORY_SAVE "+ex.Message); }
                     return "MATCH_RESTORED|Новое TCP-соединение и SERVER_GAME_STARTED подтверждены.";
                 }
             }

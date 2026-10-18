@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Net;
@@ -80,22 +80,25 @@ namespace HearthstoneReconnector
             if(!IPAddress.TryParse(last.Groups[1].Value.Trim('[', ']'), out address) || !int.TryParse(last.Groups[2].Value, out port) || port < 1 || port > 65535) return null;
             return address.ToString() + ":" + port;
         }
-        internal static string ReadLoggedEndpoint(string gamePath)
+        internal static string ReadLoggedEndpoint(string gamePath) { return ReadLoggedEndpoint(gamePath,DateTime.MinValue); }
+        internal static string ReadLoggedEndpoint(string gamePath,DateTime sessionStart)
         {
             try {
                 string root = Path.Combine(Path.GetDirectoryName(gamePath), "Logs");
                 if(!Directory.Exists(root)) return null;
                 var directories = new List<string>(Directory.GetDirectories(root)); directories.Add(root);
                 directories.Sort(delegate(string a, string b) { return Directory.GetLastWriteTimeUtc(b).CompareTo(Directory.GetLastWriteTimeUtc(a)); });
+                string bestEndpoint=null;DateTime newest=DateTime.MinValue;
                 foreach(string directory in directories.GetRange(0, Math.Min(4, directories.Count)))
                     foreach(string filename in new string[] { "GameNetLogger.log", "Hearthstone.log" }) {
                         string file = Path.Combine(directory, filename);
-                        if(!File.Exists(file) || File.GetLastWriteTimeUtc(file) < DateTime.UtcNow.AddHours(-6)) continue;
+                        if(!File.Exists(file) || File.GetLastWriteTimeUtc(file) < DateTime.UtcNow.AddHours(-6) || File.GetLastWriteTimeUtc(file)<sessionStart) continue;
                         using(var stream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete)) {
                             stream.Seek(Math.Max(0, stream.Length - 262144), SeekOrigin.Begin);
-                            using(var reader = new StreamReader(stream, Encoding.UTF8)) { string endpoint = ParseEndpoint(reader.ReadToEnd()); if(endpoint != null) return endpoint; }
+                            using(var reader = new StreamReader(stream, Encoding.UTF8)) { string endpoint = ParseEndpoint(reader.ReadToEnd()); if(endpoint != null && File.GetLastWriteTimeUtc(file)>newest) { bestEndpoint=endpoint;newest=File.GetLastWriteTimeUtc(file); } }
                         }
                     }
+                return bestEndpoint;
             } catch(Exception ex) { ConnectionManager.Log("LOG LOOKUP " + ex.Message); }
             return null;
         }
