@@ -53,7 +53,7 @@ namespace HearthstoneReconnector
             uint code=SetTcpEntry(ref native);
             ConnectionManager.Log("SET_TCP_ENTRY attempt="+attempt+" result="+code);
             if(code!=0) throw new Win32Exception((int)code,"Не удалось разорвать выбранное соединение: "+new Win32Exception((int)code).Message);
-            var clock=Stopwatch.StartNew(); bool oldGone=false, newFound=false;
+            var clock=Stopwatch.StartNew(); bool oldGone=false, newFound=false;long replacementMs=-1;GameConnection replacement=null;
             var previous=before;
             while(clock.ElapsedMilliseconds<12000) {
                 if(cancel.WaitOne(100)) return "CANCELED|Разрыв выполнен; ожидание отменено. Блокирующих правил нет.";
@@ -63,19 +63,24 @@ namespace HearthstoneReconnector
                 previous=rows;
                 foreach(var row in rows) {
                     if(row.SameSocket(target)) present=true;
-                    else if(row.RemotePort==target.RemotePort && row.RemoteAddress==target.RemoteAddress && !ContainsSocket(before,row)) newFound=true;
+                    else if(row.RemotePort==target.RemotePort && row.RemoteAddress==target.RemoteAddress && !ContainsSocket(before,row)) {
+                        newFound=true;if(replacement==null){replacement=row;replacementMs=clock.ElapsedMilliseconds;ConnectionManager.Log("TARGET_REPLACEMENT attempt="+attempt+" elapsedMs="+replacementMs+" socket="+Describe(row));}
+                    }
                 }
                 if(!present && !oldGone) { oldGone=true; ConnectionManager.Log("OLD_SOCKET_GONE attempt="+attempt+" elapsedMs="+clock.ElapsedMilliseconds); }
                 bool matchStarted=log!=null && log.MatchStarted(attempt);
                 if(oldGone && newFound && matchStarted) {
                     ConnectionManager.Log("MATCH_RESTORED attempt="+attempt+" elapsedMs="+clock.ElapsedMilliseconds+" logEndpoint="+(log.LastEndpoint??"<none>"));
-                    try { new ConnectionMemory().Confirm(path,target,"MATCH_RESTORED"); } catch(Exception ex) { ConnectionManager.Log("MEMORY_SAVE "+ex.Message); }
+                    try { new ConnectionMemory().Confirm(path,replacement??target,"MATCH_RESTORED"); } catch(Exception ex) { ConnectionManager.Log("MEMORY_SAVE "+ex.Message); }
                     return "MATCH_RESTORED|Новое TCP-соединение и SERVER_GAME_STARTED подтверждены.";
                 }
             }
             ConnectionManager.Log("RECONNECT_TIMEOUT attempt="+attempt+" oldGone="+oldGone+" exactEndpointReplacement="+newFound+" logMatchStarted="+(log!=null&&log.HasMatchStarted)+" logEndpoint="+(log==null||log.LastEndpoint==null?"<none>":log.LastEndpoint)+" finalSocketCount="+previous.Count);
             foreach(var connection in previous) ConnectionManager.Log("RECONNECT_SOCKET attempt="+attempt+" phase=TIMEOUT socket="+Describe(connection)+" relation="+Relation(connection,target)+" existedBefore="+ContainsSocket(before,connection));
-            if(oldGone && newFound) return "SOCKET_REPLACED|Новое TCP-соединение найдено. Возврат в матч по игровому журналу не подтверждён.";
+            if(oldGone && newFound) {
+                if(replacementMs>=2000)try { new ConnectionMemory().Confirm(path,replacement??target,"DELAYED_SOCKET_REPLACEMENT"); } catch(Exception ex) { ConnectionManager.Log("MEMORY_SAVE "+ex.Message); }
+                return "SOCKET_REPLACED|Новое TCP-соединение найдено. Возврат в матч по игровому журналу не подтверждён.";
+            }
             throw new IOException(oldGone?"Старое соединение закрыто, но новое не найдено за 12 секунд. Проверьте состояние игры.":"Закрытие старого соединения не подтверждено. См. журнал.");
         }
         static string Describe(GameConnection row) { return row.LocalAddress+":"+row.LocalPort+"->"+row.RemoteAddress+":"+row.RemotePort; }
