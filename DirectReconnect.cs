@@ -99,6 +99,7 @@ namespace HearthstoneReconnector
             bool refused=false;try {MakeRow(new GameConnection{LocalAddress="::1",RemoteAddress="2001:db8::1",LocalPort=1234,RemotePort=3724});}catch(NotSupportedException){refused=true;}
             if(!refused)throw new Exception("IPv6 refusal failed.");
             GameConnections.SelfTest();
+            ConnectionMemory.SelfTest();
         }
         internal static void NativeLoopbackTest() {
             var listener=new System.Net.Sockets.TcpListener(IPAddress.Loopback,0);listener.Start();
@@ -125,7 +126,7 @@ namespace HearthstoneReconnector
     }
     internal sealed class GameLogCursor
     {
-        readonly string file; long position; string carry=""; bool matchStarted; string lastEndpoint; long pendingBytes; DateTime lastProgressLog=DateTime.MinValue;
+        readonly string file; long position; string carry=""; bool matchStarted; string lastEndpoint; long pendingBytes; DateTime lastProgressLog=DateTime.MinValue,lastErrorLog=DateTime.MinValue; string lastError;
         internal bool HasMatchStarted { get { return matchStarted; } }
         internal string LastEndpoint { get { return lastEndpoint; } }
         GameLogCursor(string path,long offset){file=path;position=offset;}
@@ -150,9 +151,9 @@ namespace HearthstoneReconnector
             try{using(var stream=new FileStream(file,FileMode.Open,FileAccess.Read,FileShare.ReadWrite|FileShare.Delete)){
                 if(stream.Length<position){ConnectionManager.Log("GAME_LOG_TRUNCATED attempt="+(attempt??"<none>")+" file="+file+" oldOffset="+position+" newLength="+stream.Length);position=0;carry="";}
                 if(stream.Length==position)return matchStarted;
-                long added=stream.Length-position;stream.Seek(position,SeekOrigin.Begin);
+                long end=stream.Length;long added=end-position;stream.Seek(position,SeekOrigin.Begin);
                 string text;using(var reader=new StreamReader(stream,Encoding.UTF8)){text=reader.ReadToEnd();}
-                position=stream.Length;pendingBytes+=added;
+                position=end;pendingBytes+=added;
                 string searchable=carry+text;
                 bool newStarted=!matchStarted&&searchable.Contains("SERVER_GAME_STARTED");
                 string endpoint=GameConnections.ParseEndpoint(searchable);
@@ -165,7 +166,13 @@ namespace HearthstoneReconnector
                     pendingBytes=0;lastProgressLog=DateTime.UtcNow;
                 }
                 return matchStarted;
-            }}catch(Exception ex){ConnectionManager.Log("GAME_LOG_READ attempt="+(attempt??"<none>")+" error="+ex.Message);return matchStarted;}
+            }}catch(Exception ex){
+                if(ex.Message!=lastError||DateTime.UtcNow-lastErrorLog>=TimeSpan.FromSeconds(2)){
+                    ConnectionManager.Log("GAME_LOG_READ attempt="+(attempt??"<none>")+" error="+ex.Message);
+                    lastError=ex.Message;lastErrorLog=DateTime.UtcNow;
+                }
+                return matchStarted;
+            }
         }
     }
 }

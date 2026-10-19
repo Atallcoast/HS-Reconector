@@ -46,7 +46,8 @@
 Повторное нажатие недоступно до завершения операции и ещё 12 секунд после неё.
 
 Трей → «Открыть журнал». В reconnectоr.log записываются:
-CANDIDATE (new/known), SELECT (GAME_LOG, MEMORY_AND_NEW_SOCKET, UNIQUE_3724, MANUAL),
+CANDIDATE (new/known), SELECT (GAME_LOG, MEMORY_AND_NEW_SOCKET,
+KNOWN_PORT_AND_UNIQUE_NEW_SOCKET, UNIQUE_3724, MANUAL),
 DIRECT_BEGIN, SET_TCP_ENTRY, OLD_SOCKET_GONE, MATCH_RESTORED и MEMORY_CONFIRMED.
 Для диагностики смены адреса каждый запуск имеет поле attempt. RECONNECT_BASELINE
 и RECONNECT_TARGET фиксируют исходные сокеты и выбор; SOCKET_REMOVED/SOCKET_ADDED —

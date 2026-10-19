@@ -89,7 +89,35 @@ namespace HearthstoneReconnector {
                 reason="MEMORY_AND_NEW_SOCKET";
                 return known.Count==1 && observation.IsNew(known[0],DateTime.UtcNow)?known[0]:null;
             }
+            // Across matches the server address can change while the confirmed match port remains
+            // the same. Only automate when exactly one socket on a learned port appeared after
+            // observation began; ambiguity still requires an explicit user choice.
+            var newOnKnownPort=new List<GameConnection>();
+            foreach(var row in snapshot.Rows)
+                if(observation.IsNew(row,DateTime.UtcNow)&&KnownPort(snapshot.Path,row.RemotePort))newOnKnownPort.Add(row);
+            if(newOnKnownPort.Count>0) {
+                reason="KNOWN_PORT_AND_UNIQUE_NEW_SOCKET";
+                return newOnKnownPort.Count==1?newOnKnownPort[0]:null;
+            }
             found=GameConnections.Select(snapshot.Rows,null);reason=found==null?"MANUAL_REQUIRED":"UNIQUE_3724";return found;
+        }
+        internal static void SelfTest() {
+            string file=System.IO.Path.Combine(System.IO.Path.GetTempPath(),"HSRC-memory-test-"+Guid.NewGuid().ToString("N")+".txt");
+            try {
+                var memory=new ConnectionMemory(file);string gamePath=@"C:\Games\Hearthstone\Hearthstone.exe";
+                memory.Confirm(gamePath,new GameConnection{RemoteAddress="198.51.100.10",RemotePort=1119},"USER_CONFIRMED");
+                var service=new GameConnection{LocalAddress="192.0.2.1",LocalPort=40000,RemoteAddress="198.51.100.20",RemotePort=1119};
+                var match=new GameConnection{LocalAddress="192.0.2.1",LocalPort=40001,RemoteAddress="198.51.100.30",RemotePort=1119};
+                var observation=new ConnectionObservation();DateTime now=DateTime.UtcNow;
+                observation.Update(7,9,new List<GameConnection>{service},now.AddSeconds(-1));
+                observation.Update(7,9,new List<GameConnection>{service,match},now);
+                var snapshot=new ConnectionSnapshot{Path=gamePath,Rows=new List<GameConnection>{service,match}};string reason;
+                if(memory.Select(snapshot,observation,out reason)!=match||reason!="KNOWN_PORT_AND_UNIQUE_NEW_SOCKET")throw new Exception("Unique new socket on a learned port was not selected.");
+                var other=new GameConnection{LocalAddress="192.0.2.1",LocalPort=40002,RemoteAddress="198.51.100.40",RemotePort=1119};
+                observation.Update(7,9,new List<GameConnection>{service,match,other},now);
+                snapshot.Rows.Add(other);
+                if(memory.Select(snapshot,observation,out reason)!=null||reason!="KNOWN_PORT_AND_UNIQUE_NEW_SOCKET")throw new Exception("Ambiguous new sockets must require manual selection.");
+            } finally { try { if(File.Exists(file))File.Delete(file); } catch {} }
         }
     }
     internal sealed class ConnectionPicker : Form {
